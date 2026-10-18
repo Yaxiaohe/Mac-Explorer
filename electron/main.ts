@@ -1,6 +1,6 @@
 import { languageState, loadLanguage, saveLanguage } from './language';
 import { t as tr } from '../shared/i18n';
-import { app, BrowserWindow, globalShortcut, ipcMain, shell, clipboard, ClipboardItem, dialog, Menu, nativeTheme, ShareMenu, screen, type Rectangle } from 'electron';
+import { app, BrowserWindow, globalShortcut, ipcMain, shell, clipboard, ClipboardItem, dialog, Menu, nativeImage, nativeTheme, ShareMenu, screen, type Rectangle } from 'electron';
 import fs from 'node:fs/promises';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { watch, type FSWatcher } from 'node:fs';
@@ -205,7 +205,7 @@ const HANDLERS = {
 type HandlerKind = keyof typeof HANDLERS;
 type DefaultAppKey = 'login' | 'desktop' | HandlerKind;
 interface DefaultAppState { login: boolean; desktop: boolean; handlers: Record<HandlerKind, string | null>; installed: boolean; self: string }
-let defaults: { appURL(): string; bundleID(): string; loginEnabled(): boolean; setLogin(value: boolean): boolean; defaultHandler(type: string): string | null; setDefaultForFile(application: string, file: string): boolean } | undefined;
+let defaults: { appURL(): string; bundleID(): string; loginEnabled(): boolean; setLogin(value: boolean): boolean; defaultHandler(type: string): string | null; setDefaultForFile(application: string, file: string): boolean; mouseDown(): boolean } | undefined;
 const isHandlerKind = (value: unknown): value is HandlerKind => typeof value === 'string' && value in HANDLERS;
 const isDefaultAppKey = (value: unknown): value is DefaultAppKey => value === 'login' || value === 'desktop' || isHandlerKind(value);
 async function finderPreference(name: string) {
@@ -260,10 +260,28 @@ ipc('set-theme', async (mode: unknown) => {
   for (const window of windows.keys()) window.setBackgroundColor(nativeTheme.shouldUseDarkColors ? '#191919' : '#ffffff');
   return mode;
 });
+// Dragging out to another app needs a native drag session; an HTML5 drag never leaves the
+// window. startDrag must run while the gesture is still live, so the request is synchronous
+// and carries the icon the row already shows. Icons for folders (which render as SVG) come
+// from this cache, primed as soon as a directory listing arrives.
+const dragIcons = new Map<string, Electron.NativeImage>();
+const dragIconsPending = new Set<string>();
+function primeDragIcons(paths: string[]) {
+  for (const path of paths.slice(0, 80)) {
+    if (dragIcons.has(path) || dragIconsPending.has(path)) continue;
+    dragIconsPending.add(path);
+    app.getFileIcon(path, { size: 'normal' })
+      .then(icon => dragIcons.set(path, icon))
+      .catch(() => {})
+      .finally(() => dragIconsPending.delete(path));
+  }
+}
 ipc('list', (input: string, refreshIcons: unknown = false) => {
   const directory = absolute(input);
   if (refreshIcons === true) fileIcons.clearCache();
-  return listDirectory(directory);
+  const listing = listDirectory(directory);
+  void listing.then(result => primeDragIcons(result.entries.map(entry => entry.path))).catch(() => {});
+  return listing;
 });
 ipc('search', async (input: string, query: string, hidden: boolean) => {
   const state = windows.get(currentWindow()!)!;
@@ -273,21 +291,64 @@ ipc('search', async (input: string, query: string, hidden: boolean) => {
 });
 ipc('cancel-search', () => windows.get(currentWindow()!)?.searchController?.abort());
 ipc('info', (input: string) => entryFor(absolute(input)));
-// Dragging to another app needs a native drag session; an HTML5 drag never leaves the window.
-const dragIcons = new Map<string, Electron.NativeImage>();
-ipcMain.on('start-drag', async (event, inputs: unknown) => {
+type DragTargetArea = { key: string; path: string; x: number; y: number; width: number; height: number };
+function dragTargetAreas(value: unknown): DragTargetArea[] {
+  if (!Array.isArray(value)) return [];
+  const areas: DragTargetArea[] = [];
+  for (const item of value.slice(0, 400)) {
+    const target = item as Partial<DragTargetArea>;
+    if (typeof target.key !== 'string' || typeof target.path !== 'string') continue;
+    if (![target.x, target.y, target.width, target.height].every(number => typeof number === 'number' && Number.isFinite(number))) continue;
+    areas.push({ key: target.key, path: target.path, x: target.x!, y: target.y!, width: target.width!, height: target.height! });
+  }
+  return areas;
+}
+// A native drag session owns the mouse, so the window never receives a drop event. One gesture
+// still has to serve both purposes: dropping onto another app hands the files over, dropping
+// onto a folder, tab or sidebar row inside the window moves them. The main process follows the
+// cursor during the session and, when the button comes up, either forwards the landing area to
+// the window or leaves the drop to whichever app received it.
+function trackNativeDrop(sender: Electron.WebContents, owner: BrowserWindow, areas: DragTargetArea[]) {
+  if (!areas.length || !defaults?.mouseDown) return;
+  const origin = owner.getContentBounds();
+  const placed = areas.map(area => ({ ...area, x: origin.x + area.x, y: origin.y + area.y }));
+  let hovered: string | null = null;
+  let held = false;
+  const started = Date.now();
+  let timer: NodeJS.Timeout;
+  const stop = () => clearInterval(timer);
+  timer = setInterval(() => {
+    if (sender.isDestroyed() || owner.isDestroyed()) { stop(); return; }
+    const pressed = defaults!.mouseDown();
+    if (pressed) held = true;
+    const point = screen.getCursorScreenPoint();
+    const hit = placed.find(area => point.x >= area.x && point.x < area.x + area.width && point.y >= area.y && point.y < area.y + area.height) ?? null;
+    if ((hit?.key ?? null) !== hovered) { hovered = hit?.key ?? null; sender.send('drag-hover', hovered); }
+    if (held && !pressed) { stop(); if (process.env.EXPLORER_DRAG_DEBUG) console.log('[drag] ended', { hit: hit?.key ?? null, point }); if (hit) sender.send('drag-drop', hit.path); return; }
+    // A gesture that never held the button (or one the system cancelled at once) must not leave a timer behind.
+    if (!held && Date.now() - started > 1500) { stop(); if (hovered) sender.send('drag-hover', null); }
+  }, 40);
+}
+ipcMain.on('start-drag', (event, payload: unknown) => {
   const owner = BrowserWindow.fromWebContents(event.sender);
-  if (!owner || !windows.has(owner)) return;
+  if (!owner || !windows.has(owner) || event.sender.isDestroyed()) return;
+  const request = (payload ?? {}) as { paths?: unknown; icon?: unknown; targets?: unknown };
   let paths: string[];
-  try { paths = pathsArg(inputs); } catch { return; }
+  try { paths = pathsArg(request.paths); } catch { return; }
   if (!paths.length) return;
-  if (process.env.EXPLORER_TEST_ROOT) { (globalThis as { __lastDrag?: string[] }).__lastDrag = paths; return; }
-  try {
-    let icon = dragIcons.get(paths[0]);
-    if (!icon) { icon = await app.getFileIcon(paths[0], { size: 'normal' }); dragIcons.set(paths[0], icon); }
-    if (event.sender.isDestroyed()) return;
-    event.sender.startDrag({ file: paths[0], files: paths, icon });
-  } catch { /* The gesture can end before the icon is ready. */ }
+  const targets = dragTargetAreas(request.targets);
+  const captured = typeof request.icon === 'string' && request.icon.startsWith('data:image/') ? request.icon : '';
+  if (process.env.EXPLORER_TEST_ROOT) {
+    const probe = globalThis as { __lastDrag?: string[]; __lastDragIcon?: boolean; __lastDragTargets?: number };
+    probe.__lastDrag = paths; probe.__lastDragIcon = captured.length > 0; probe.__lastDragTargets = targets.length;
+    return;
+  }
+  // The drag image has to be at least 64x64 or macOS silently refuses to start the session.
+  const supplied = captured ? nativeImage.createFromDataURL(captured) : null;
+  const cached = dragIcons.get(paths[0]);
+  const icon = supplied && !supplied.isEmpty() ? supplied : cached ? cached.resize({ width: 128, height: 128 }) : nativeImage.createEmpty();
+  event.sender.startDrag({ file: paths[0], files: paths, icon });
+  trackNativeDrop(event.sender, owner, targets);
 });
 ipc('open', async (input: string) => {
   const filePath = absolute(input);

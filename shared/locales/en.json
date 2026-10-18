@@ -409,5 +409,7 @@
   "多个项目": "Multiple items",
   "多个位置": "Multiple locations",
   "拖到其他应用": "Drag to another app",
-  "按住 ⌥ 拖动文件": "Hold ⌥ while dragging"
+  "按住 ⌥ 拖动文件": "Hold ⌥ while dragging",
+  "拖出到其他应用": "Drag out to another app",
+  "直接拖动文件": "Just drag the file"
 }

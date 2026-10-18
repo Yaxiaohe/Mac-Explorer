@@ -10,7 +10,8 @@ const docs = path.join(root, 'Documents');
 await fs.mkdir(path.join(docs, '目标'));
 await fs.writeFile(path.join(docs, '原文件.txt'), 'preserved content');
 await fs.writeFile(path.join(docs, '.hidden-test'), 'hidden');
-const app = await electron.launch({ ...(process.env.EXPLORER_APP_PATH ? { executablePath: process.env.EXPLORER_APP_PATH, args: [] } : { args: [process.cwd()] }), env: { ...process.env, EXPLORER_TEST_ROOT: root, EXPLORER_TEST_HIDDEN: '1' } });
+const flags = (process.env.EXPLORER_SMOKE_ARGS || '').split(' ').filter(Boolean);
+const app = await electron.launch({ ...(process.env.EXPLORER_APP_PATH ? { executablePath: process.env.EXPLORER_APP_PATH, args: flags } : { args: [process.cwd(), ...flags] }), env: { ...process.env, EXPLORER_TEST_ROOT: root, EXPLORER_TEST_HIDDEN: '1' } });
 try {
   await app.evaluate(async ({ clipboard, ClipboardItem, shell }) => {
     globalThis.savedClipboard = await Promise.all((await clipboard.read()).filter(item => item.types.length).map(async item => new ClipboardItem(Object.fromEntries(await Promise.all(item.types.map(async type => [type, await item.getType(type)]))))));

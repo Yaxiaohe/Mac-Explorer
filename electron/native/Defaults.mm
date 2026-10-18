@@ -99,20 +99,29 @@ static napi_value SetDefaultForFile(napi_env env, napi_callback_info info) {
   return BoolValue(env, YES);
 }
 
+// A native drag session owns the mouse: the renderer never sees the mouseup that ends it. The
+// main process polls the left button instead, which is how the drop tracker learns the gesture
+// is over and where the cursor stopped.
+static napi_value MouseDown(napi_env env, napi_callback_info info) {
+  return BoolValue(env, ([NSEvent pressedMouseButtons] & 1) != 0);
+}
+
 static napi_value Init(napi_env env, napi_value exports) {
-  napi_value appURL, bundleID, loginEnabled, setLogin, defaultHandler, setDefaultForFile;
+  napi_value appURL, bundleID, loginEnabled, setLogin, defaultHandler, setDefaultForFile, mouseDown;
   napi_create_function(env, "appURL", NAPI_AUTO_LENGTH, AppURL, nullptr, &appURL);
   napi_create_function(env, "bundleID", NAPI_AUTO_LENGTH, BundleID, nullptr, &bundleID);
   napi_create_function(env, "loginEnabled", NAPI_AUTO_LENGTH, LoginEnabled, nullptr, &loginEnabled);
   napi_create_function(env, "setLogin", NAPI_AUTO_LENGTH, SetLogin, nullptr, &setLogin);
   napi_create_function(env, "defaultHandler", NAPI_AUTO_LENGTH, DefaultHandler, nullptr, &defaultHandler);
   napi_create_function(env, "setDefaultForFile", NAPI_AUTO_LENGTH, SetDefaultForFile, nullptr, &setDefaultForFile);
+  napi_create_function(env, "mouseDown", NAPI_AUTO_LENGTH, MouseDown, nullptr, &mouseDown);
   napi_set_named_property(env, exports, "appURL", appURL);
   napi_set_named_property(env, exports, "bundleID", bundleID);
   napi_set_named_property(env, exports, "loginEnabled", loginEnabled);
   napi_set_named_property(env, exports, "setLogin", setLogin);
   napi_set_named_property(env, exports, "defaultHandler", defaultHandler);
   napi_set_named_property(env, exports, "setDefaultForFile", setDefaultForFile);
+  napi_set_named_property(env, exports, "mouseDown", mouseDown);
   return exports;
 }
 NAPI_MODULE(NODE_GYP_MODULE_NAME, Init)

@@ -10,8 +10,9 @@ const names = ['网页.html', '带格式.rtf', '说明.md', '配置.json', '脚�
 await fs.mkdir(docs);
 await fs.mkdir(path.join(docs, '文件夹'));
 for (const name of names) await fs.writeFile(path.join(docs, name), 'Temporary text editor fixture');
+const flags = (process.env.EXPLORER_SMOKE_ARGS || '').split(' ').filter(Boolean);
 const app = await electron.launch({
-  ...(process.env.EXPLORER_APP_PATH ? { executablePath: process.env.EXPLORER_APP_PATH, args: [] } : { args: [process.cwd()] }),
+  ...(process.env.EXPLORER_APP_PATH ? { executablePath: process.env.EXPLORER_APP_PATH, args: flags } : { args: [process.cwd(), ...flags] }),
   env: { ...process.env, EXPLORER_TEST_ROOT: root, EXPLORER_TEST_HIDDEN: '1' },
 });
 try {

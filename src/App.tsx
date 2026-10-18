@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { archiveFolderName, isArchive } from '../shared/archives';
-import type { DefaultAppKey, DefaultAppState, ExtractMode, ArchivePreview, Bootstrap, ClipboardInfo, FileEntry, HandlerKind, OperationResult, Place, Preview, ThemeMode, Volume } from '../shared/types';
+import type { DefaultAppKey, DefaultAppState, DragTargetArea, ExtractMode, ArchivePreview, Bootstrap, ClipboardInfo, FileEntry, HandlerKind, OperationResult, Place, Preview, ThemeMode, Volume } from '../shared/types';
 
 const api = window.explorer;
 const isMac = /Mac/i.test(navigator.platform);
@@ -172,6 +172,8 @@ export default function App() {
   const [editingName, setEditingName] = useState<{ path: string; name: string } | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [dragOver, setDragOver] = useState<string | null>(null);
+  const dragPaths = useRef<string[]>([]);
+  const dropHandler = useRef<(paths: string[], destination: string) => void>(() => {});
   const tabHover = useRef<{ id: string; timer: number } | null>(null);
   const addressRef = useRef<HTMLInputElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -671,13 +673,28 @@ export default function App() {
       else { await openFile(entry); setEditingAddress(false); }
     });
   }
+  // A native drag session never reaches the DOM, so the main process reports the landing area
+  // back over IPC and the move happens through the same path an external drop would take.
+  function moveInto(paths: string[], destination: string) {
+    if (!paths.length || isVirtual(destination)) return;
+    if (viewingTrash && trashRoots.some(root => destination === root || destination.startsWith(root + '/'))) return;
+    run(tr('正在移动拖入的文件…'), async () => report(await api.moveTo(paths, destination), tr('已移动')));
+  }
+  dropHandler.current = moveInto;
   function drop(event: React.DragEvent, destination: string) {
     event.preventDefault(); event.stopPropagation(); setDragOver(null);
-    if (isVirtual(destination) || viewingTrash && trashRoots.some(root => destination === root || destination.startsWith(root + '/'))) return;
     let paths: string[] = [];
     try { paths = JSON.parse(event.dataTransfer.getData('application/x-explorer-paths') || '[]'); } catch { /* External drop. */ }
     if (!paths.length) paths = Array.from(event.dataTransfer.files).map(file => api.filePath(file)).filter(Boolean);
-    if (paths.length) run(tr('正在移动拖入的文件…'), async () => report(await api.moveTo(paths, destination), tr('已移动')));
+    moveInto(paths, destination);
+  }
+  // Every place that can take a drop, in window coordinates: the main process turns these into
+  // screen coordinates to find where a native drag stopped.
+  function dropTargets(): DragTargetArea[] {
+    return [...document.querySelectorAll<HTMLElement>('[data-drop-path]')].map(element => {
+      const rect = element.getBoundingClientRect();
+      return { key: element.dataset.dropKey || element.dataset.dropPath!, path: element.dataset.dropPath!, x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+    });
   }
 
   const actions = useRef<(action: string) => void>(() => {});
@@ -691,6 +708,17 @@ export default function App() {
     if (action === 'paste') paste(); if (action === 'move-here') paste(true); if (action === 'undo') undo(); if (action === 'select-all') setSelected(new Set(visible.map(e => e.path)));
   };
   useEffect(() => api.onAction(action => actions.current(action)), []);
+  // The drag never reaches the DOM, so hovering a tab has to drive the switch from here.
+  const hoverHandler = useRef<(key: string | null) => void>(() => {});
+  hoverHandler.current = key => {
+    setDragOver(key);
+    const id = key?.startsWith('tab:') ? key.slice(4) : '';
+    if (!id || id === tab.id) { clearTimeout(tabHover.current?.timer); tabHover.current = null; return; }
+    clearTimeout(tabHover.current?.timer);
+    tabHover.current = { id, timer: window.setTimeout(() => { tabHover.current = null; setActiveID(id); resetNavigation(); }, 600) };
+  };
+  useEffect(() => api.onDragHover(key => hoverHandler.current(key)), []);
+  useEffect(() => api.onDragDrop(destination => { setDragOver(null); dropHandler.current(dragPaths.current, destination); }), []);
   useEffect(() => {
     const keydown = (event: globalThis.KeyboardEvent) => {
       const input = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement;
@@ -871,9 +899,10 @@ export default function App() {
         {(['name', 'modified', 'type', 'size'] as SortKey[]).map(key => <button key={key} className={`col-${key}`} onClick={() => { if (sort === key) setAscending(v => !v); else { setSort(key); setAscending(true); } }}>{({ name: tr('名称'), modified: tr('修改日期'), type: tr('类型'), size: tr('大小') })[key]}{sort === key && <ChevronDown size={12} className={ascending ? 'rotated' : ''}/>}</button>)}
       </div>}
       {visible.map((entry, index) => <div key={entry.path} data-path={entry.path} data-index={index} role="option" aria-selected={selected.has(entry.path)} aria-label={entry.name}
+        data-drop-path={entry.isDirectory && !viewingTrash && !isVirtual(entry.path) ? entry.path : undefined} data-drop-key={entry.path}
         className={`file-row ${selected.has(entry.path) ? 'selected' : ''} ${clipboard.cut && clipboard.paths.includes(entry.path) ? 'cut' : ''} ${dragOver === entry.path ? 'drop-target' : ''} ${entry.hidden ? 'hidden-file' : ''}`}
         onClick={event => select(entry, event)} onDoubleClick={event => event.altKey ? showProperties([entry.path]) : openEntry(entry)} onContextMenu={event => contextMenu(event, entry)} draggable
-        onDragStart={event => { const paths = selected.has(entry.path) ? [...selected] : [entry.path]; setPopup(null); if (event.altKey) { event.preventDefault(); api.startDrag(paths); return; } event.dataTransfer.setData('application/x-explorer-paths', JSON.stringify(paths)); event.dataTransfer.effectAllowed = 'move'; }}
+        onDragStart={event => { const paths = selected.has(entry.path) ? [...selected] : [entry.path]; setPopup(null); dragPaths.current = paths; event.preventDefault(); api.startDrag(paths, event.currentTarget.querySelector('img.file-glyph')?.getAttribute('src') ?? undefined, dropTargets()); }}
         onDragOver={event => { if (entry.isDirectory && !viewingTrash) { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'move'; setDragOver(entry.path); } }}
         onDragLeave={() => setDragOver(null)} onDrop={event => { if (entry.isDirectory) drop(event, entry.path); }}>
         {checkboxes && <input className="item-checkbox" type="checkbox" aria-label={tr('选择 {0}', entry.name)} checked={selected.has(entry.path)} onClick={event => event.stopPropagation()} onDoubleClick={event => event.stopPropagation()} onChange={event => { const checked = event.target.checked; setSelected(previous => { const next = new Set(previous); if (checked) next.add(entry.path); else next.delete(entry.path); return next; }); selectionAnchor.current = entry.path; }}/>}
@@ -888,7 +917,7 @@ export default function App() {
     <header className="tab-strip">
       <div className="traffic-light-space"/>
       <div className="tabs" role="tablist" aria-label={tr('文件夹标签页')}>
-        {tabs.map(t => <div key={t.id} className={`tab ${t.id === tab.id ? 'current' : ''} ${dragOver === 'tab:' + t.id ? 'drop-target' : ''}`}
+        {tabs.map(t => <div key={t.id} className={`tab ${t.id === tab.id ? 'current' : ''} ${dragOver === 'tab:' + t.id ? 'drop-target' : ''}`} data-drop-path={isVirtual(t.location) ? undefined : t.location} data-drop-key={'tab:' + t.id}
           onDragOver={event => {
             if (isVirtual(t.location)) return;
             event.preventDefault(); event.stopPropagation();
@@ -993,7 +1022,7 @@ export default function App() {
         {error && <div className="error-bar" role="alert"><Info size={17}/><span>{error}</span>{error.includes(tr('完全磁盘访问权限')) && <button className="permission-settings-button" disabled={openingPrivacySettings} onClick={() => void openPrivacySettings()} title={tr('打开系统设置中的完全磁盘访问权限')}>{openingPrivacySettings ? tr('正在打开…') : tr('前往设置')}</button>}<button title={tr('关闭提示')} aria-label={tr('关闭错误提示')} onClick={() => setError('')}><X size={15}/></button></div>}
         {viewingTrash && <div className="search-summary"><Trash2 size={16}/><span>{tr('回收站')}</span><small>{tr('还原到原位置；无法确定原位置时选择文件夹')}</small><button className="secondary-button" disabled={!selected.size || !!operation} onClick={() => restoreTrash()}>{tr('还原')}</button><button className="secondary-button" disabled={!!operation} onClick={clearTrash}>{tr('清空回收站…')}</button></div>}
         {submittedQuery && <div className="search-summary"><Search size={16}/><span>{tr('“{0}” 的搜索结果', submittedQuery)}</span><small>{loading ? tr('正在搜索子文件夹…') : searchNote || tr('{0} 个匹配项目', visible.length)}</small><button onClick={() => { setQuery(''); setSubmittedQuery(''); }}>{tr('退出搜索')}</button></div>}
-        <div ref={contentRef} tabIndex={0} className={`file-content view-${view} ${dragOver === location ? 'drop-target' : ''}`} aria-label={label(location)} aria-busy={loading}
+        <div ref={contentRef} tabIndex={0} className={`file-content view-${view} ${dragOver === location ? 'drop-target' : ''}`} aria-label={label(location)} aria-busy={loading} data-drop-path={writable && !isVirtual(location) ? location : undefined} data-drop-key={location}
           onPointerDown={startMarquee} onClickCapture={event => { if (suppressMarqueeClick.current) { event.preventDefault(); event.stopPropagation(); suppressMarqueeClick.current = false; } }}
           onContextMenu={event => contextMenu(event)}
           onDragOver={event => { if (writable) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDragOver(location); } }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragOver(null); }} onDrop={event => drop(event, location)}>
@@ -1150,7 +1179,7 @@ function NavigationTree({ place, location, hidden, navigate, newTab, drop, conte
     return () => { live = false; };
   }, [expanded, place.path, hidden, location]);
   return <div className="tree-node">
-    <div className={`tree-row ${location === place.path ? 'current' : ''} ${over ? 'drop-target' : ''}`} onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setOver(true); }} onDragLeave={() => setOver(false)} onDrop={event => { setOver(false); drop(event, place.path); }}>
+    <div className={`tree-row ${location === place.path ? 'current' : ''} ${over ? 'drop-target' : ''}`} data-drop-path={isVirtual(place.path) ? undefined : place.path} onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setOver(true); }} onDragLeave={() => setOver(false)} onDrop={event => { setOver(false); drop(event, place.path); }}>
       <button className="tree-toggle" style={{ left: 1 + level * 12 }} aria-label={`${expanded ? tr('折叠') : tr('展开')} ${place.name}`} aria-expanded={expanded} onClick={() => setExpanded(v => !v)}>{loading ? <Loader2 size={11} className="spinning"/> : <ChevronRight size={11}/>}</button>
       <button className={`nav-item ${location === place.path ? 'current' : ''}`} style={{ paddingLeft: 24 + level * 12, paddingRight: eject ? 36 : undefined }} onClick={() => navigate(place.path)} onAuxClick={event => { if (event.button === 1) newTab(place.path); }} onContextMenu={event => context(event, place)}>
         {place.icon === 'folder' ? <FolderGlyph dimension={20}/> : <PlaceIcon icon={place.icon}/>}<span>{place.name}</span>{pinned && <Pin size={12} className="pin-mark"/>}
@@ -1197,7 +1226,7 @@ function ModalDialog({ modal, value, onChange, error, busy, onClose, onSubmit }:
   return <dialog ref={dialogRef} className={`modal ${modal.kind === 'shortcuts' ? 'shortcut-modal' : ''} ${modal.kind === 'properties' ? 'properties-modal' : ''}`} aria-labelledby="modal-title" onCancel={event => { event.preventDefault(); onClose(); }} onClose={onClose}>
     <form onSubmit={event => { event.preventDefault(); onSubmit(modal.kind === 'trash' && skipTrashConfirmation); }}><div className="modal-heading"><h2 id="modal-title">{title}</h2><button type="button" aria-label={tr('关闭对话框')} onClick={onClose} disabled={busy}><X size={18}/></button></div>
       {modal.kind === 'properties' ? <dl className="properties-list">{propertyRows.map(([label, content]) => <div key={label}><dt>{label}</dt><dd title={content}>{content}</dd></div>)}</dl> : modal.kind === 'shortcuts' ? <><p className="shortcut-note">{tr('文件操作遵循 macOS 访达的常用快捷键。')}</p><div className="shortcut-list">{[[tr('重命名'), 'Return'], [tr('打开项目'), '⌘O / ⌘↓'], [tr('复制 / 粘贴 / 撤销'), '⌘C / ⌘V / ⌘Z'], [tr('移动已复制的文件'), '⌥⌘V'], [tr('创建副本'), '⌘D'], [tr('全选 / 新建文件夹'), '⌘A / ⇧⌘N'], [tr('移到回收站'), '⌘⌫'], [tr('快速查看'), 'Space / ⌘Y'], [tr('唤醒 Mac Explorer（全局）'), '⌘E'],
-[tr('后退 / 前进 / 上一级'), tr('⌘[ / ⌘] / Backspace 或 ⌘↑')], [tr('前往文件夹 / 搜索'), '⇧⌘G / ⌘F'], [tr('新建 / 关闭标签页'), '⌘T / ⌘W'], [tr('切换标签页'), '⌃Tab / ⌃⇧Tab'], [tr('图标 / 详细信息视图'), '⌘1 / ⌘2'], [tr('预览窗格 / 隐藏项目'), '⇧⌘P / ⇧⌘.'], [tr('详细信息窗格'), '⌘I'], [tr('属性'), 'Alt+双击 / ⌥⏎'], [tr('拖到其他应用'), tr('按住 ⌥ 拖动文件')]].map(([name, keys]) => <div key={name}><span>{name}</span><kbd>{keys}</kbd></div>)}</div><p className="shortcut-note">{tr('移动文件：先 ⌘C，再到目标文件夹按 ⌥⌘V。保留 Ctrl+C / X / V、F2、F5 等兼容快捷键；输入框内沿用文本编辑快捷键。')}</p></> : modal.kind === 'trash' ? <div className="trash-description"><Trash2 size={34} strokeWidth={1.4}/><div><p>{modal.paths.length === 1 ? tr('将“{0}”移到回收站？', base(modal.paths[0])) : tr('将这 {0} 个项目移到回收站？', modal.paths.length)}</p><small>{tr('文件将移入 macOS 回收站，你可以从那里恢复。')}</small></div></div> : <><label className="name-label" htmlFor="entry-name">{tr('名称')}</label><input ref={inputRef} id="entry-name" value={value} onChange={event => onChange(event.target.value)} disabled={busy} autoComplete="off"/><p className="modal-location">{tr('位置：')}{modal.kind === 'rename' ? parent(modal.path) : modal.path}</p></>}
+[tr('后退 / 前进 / 上一级'), tr('⌘[ / ⌘] / Backspace 或 ⌘↑')], [tr('前往文件夹 / 搜索'), '⇧⌘G / ⌘F'], [tr('新建 / 关闭标签页'), '⌘T / ⌘W'], [tr('切换标签页'), '⌃Tab / ⌃⇧Tab'], [tr('图标 / 详细信息视图'), '⌘1 / ⌘2'], [tr('预览窗格 / 隐藏项目'), '⇧⌘P / ⇧⌘.'], [tr('详细信息窗格'), '⌘I'], [tr('属性'), 'Alt+双击 / ⌥⏎'], [tr('拖出到其他应用'), tr('直接拖动文件')]].map(([name, keys]) => <div key={name}><span>{name}</span><kbd>{keys}</kbd></div>)}</div><p className="shortcut-note">{tr('移动文件：先 ⌘C，再到目标文件夹按 ⌥⌘V。保留 Ctrl+C / X / V、F2、F5 等兼容快捷键；输入框内沿用文本编辑快捷键。')}</p></> : modal.kind === 'trash' ? <div className="trash-description"><Trash2 size={34} strokeWidth={1.4}/><div><p>{modal.paths.length === 1 ? tr('将“{0}”移到回收站？', base(modal.paths[0])) : tr('将这 {0} 个项目移到回收站？', modal.paths.length)}</p><small>{tr('文件将移入 macOS 回收站，你可以从那里恢复。')}</small></div></div> : <><label className="name-label" htmlFor="entry-name">{tr('名称')}</label><input ref={inputRef} id="entry-name" value={value} onChange={event => onChange(event.target.value)} disabled={busy} autoComplete="off"/><p className="modal-location">{tr('位置：')}{modal.kind === 'rename' ? parent(modal.path) : modal.path}</p></>}
       {modal.kind === 'trash' && <label className="trash-confirmation-preference"><input type="checkbox" checked={skipTrashConfirmation} disabled={busy} onChange={event => setSkipTrashConfirmation(event.target.checked)}/>{tr('不再显示此提示')}</label>}
       {error && <p className="modal-error" role="alert">{error}</p>}
       <div className="modal-actions"><button type="button" className="secondary-button" disabled={busy} onClick={onClose}>{modal.kind === 'shortcuts' ? tr('知道了') : modal.kind === 'properties' ? tr('关闭') : tr('取消')}</button>{modal.kind !== 'shortcuts' && modal.kind !== 'properties' && <button type="submit" ref={confirmRef} className="primary-button" disabled={busy || modal.kind !== 'trash' && !value.trim()}>{busy ? tr('正在处理…') : modal.kind === 'trash' ? tr('移到回收站') : tr('确定')}</button>}</div>

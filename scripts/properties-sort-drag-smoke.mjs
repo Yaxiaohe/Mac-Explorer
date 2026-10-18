@@ -51,23 +51,24 @@ try {
     return names.indexOf('b.txt') >= 0 && names.indexOf('b.txt') < names.indexOf('a.txt');
   });
 
-  // Alt-drag hands the paths to the native drag session; a plain drag still fills the HTML5 payload.
+  // A plain drag starts a native session just like an Alt-drag used to: one gesture, no modifier.
+  // The row icon and the in-window drop targets travel with the request.
+  await page.waitForFunction(() => {
+    const row = [...document.querySelectorAll('.file-row')].find(element => element.getAttribute('aria-label') === 'a.txt');
+    return !!row?.querySelector('img.file-glyph[src^="data:"]');
+  });
   const dragged = await page.evaluate(() => {
     const row = [...document.querySelectorAll('.file-row')].find(element => element.getAttribute('aria-label') === 'a.txt');
-    row.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, altKey: true, dataTransfer: new DataTransfer() }));
+    row.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: new DataTransfer() }));
   });
   assert.equal(dragged, undefined);
   await page.waitForTimeout(400);
   const nativePaths = await app.evaluate(() => globalThis.__lastDrag);
   assert.ok(Array.isArray(nativePaths) && nativePaths.some(p => p.endsWith('a.txt')), `native drag: ${JSON.stringify(nativePaths)}`);
-  const html5 = await page.evaluate(() => {
-    const row = [...document.querySelectorAll('.file-row')].find(element => element.getAttribute('aria-label') === 'a.txt');
-    const transfer = new DataTransfer();
-    row.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: transfer }));
-    return transfer.getData('application/x-explorer-paths');
-  });
-  assert.ok(JSON.parse(html5).some(p => p.endsWith('a.txt')), `html5 payload: ${html5}`);
-  console.log('PASS: Alt+double-click and Alt+Enter open the properties dialog (file and folder), the empty-area menu sorts, Alt-drag starts a native drag and a plain drag keeps the HTML5 payload.');
+  assert.equal(await app.evaluate(() => globalThis.__lastDragIcon), true, 'the row icon travels with the drag request');
+  const targetCount = await app.evaluate(() => globalThis.__lastDragTargets);
+  assert.ok(targetCount > 0, `in-window drop targets reported: ${targetCount}`);
+  console.log('PASS: Alt+double-click and Alt+Enter open the properties dialog (file and folder), the empty-area menu sorts, a plain drag starts one native session and reports where it may land.');
 } finally {
   await app.close(); await fs.rm(root, { recursive: true, force: true });
 }

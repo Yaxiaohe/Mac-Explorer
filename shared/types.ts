@@ -14,6 +14,9 @@ export interface SearchResult { entries: FileEntry[]; truncated: boolean; skippe
 export interface FileChange { from?: string; to: string }
 export interface OperationResult { succeeded: string[]; errors: { path: string; message: string }[]; changes?: FileChange[] }
 export type ClipboardInfo = { paths: string[]; cut: boolean };
+// A place inside the window that accepts a drop, in window-relative CSS pixels. The main process
+// turns these into screen coordinates to find where a native drag session ended.
+export interface DragTargetArea { key: string; path: string; x: number; y: number; width: number; height: number }
 export type Preview = { kind: 'image' | 'text' | 'none'; content: string; truncated?: boolean };
 export type ExtractMode = 'choose' | 'here' | 'folder';
 // File types whose default handler can be switched: macOS refuses folder elections.
@@ -56,7 +59,9 @@ export interface ExplorerAPI {
   openTerminal(path: string): Promise<void>;
   share(paths: string[]): Promise<void>;
   info(path: string): Promise<FileEntry>;
-  startDrag(paths: string[]): void;
+  startDrag(paths: string[], icon?: string, targets?: DragTargetArea[]): void;
+  onDragHover(callback: (key: string | null) => void): () => void;
+  onDragDrop(callback: (destination: string) => void): () => void;
   preview(path: string): Promise<Preview>;
   icon(path: string, pixels?: number): Promise<string>;
   create(parent: string, name: string, directory: boolean): Promise<string>;
