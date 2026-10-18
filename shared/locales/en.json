@@ -401,5 +401,13 @@
   "用 Mac Explorer 打开以下文件": "Open these files with Mac Explorer",
   "正在更新默认应用设置…": "Updating default app settings…",
   "无效的默认应用设置。": "Invalid default app setting.",
-  "无法设置登录项。": "The login item could not be updated."
+  "无法设置登录项。": "The login item could not be updated.",
+  "排序方式": "Sort by",
+  "创建时间": "Created",
+  "修改时间": "Modified",
+  "正常": "Normal",
+  "多个项目": "Multiple items",
+  "多个位置": "Multiple locations",
+  "拖到其他应用": "Drag to another app",
+  "按住 ⌥ 拖动文件": "Hold ⌥ while dragging"
 }

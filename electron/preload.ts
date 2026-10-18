@@ -31,6 +31,7 @@ const api: ExplorerAPI = {
   openTerminal: path => ipcRenderer.invoke('open-terminal', path),
   share: paths => ipcRenderer.invoke('share', paths),
   info: path => ipcRenderer.invoke('info', path),
+  startDrag: paths => ipcRenderer.send('start-drag', paths),
   preview: path => ipcRenderer.invoke('preview', path),
   icon: (path, pixels) => ipcRenderer.invoke('icon', path, pixels),
   create: (parent, name, directory) => ipcRenderer.invoke('create', parent, name, directory),

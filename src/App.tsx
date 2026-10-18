@@ -22,7 +22,7 @@ type SortKey = 'name' | 'modified' | 'type' | 'size';
 type View = 'details' | 'icons' | 'list' | 'tiles' | 'content';
 type MenuItem = { children?: MenuItem[]; radio?: boolean; label: string; icon?: ReactNode; action?: () => void; shortcut?: string; checked?: boolean; disabled?: boolean; danger?: boolean; divider?: boolean };
 type Popup = { x: number; y: number; items: MenuItem[]; quickActions?: MenuItem[] };
-type Modal = { kind: 'archive'; archive: ArchivePreview } | { kind: 'folder' | 'file' | 'rename'; path: string; name: string } | { kind: 'trash'; paths: string[] } | { kind: 'shortcuts' };
+type Modal = { kind: 'archive'; archive: ArchivePreview } | { kind: 'folder' | 'file' | 'rename'; path: string; name: string } | { kind: 'trash'; paths: string[] } | { kind: 'properties'; entries: FileEntry[] } | { kind: 'shortcuts' };
 const makeTab = (location = ''): Tab => ({ id: crypto.randomUUID(), location, history: [location], index: 0 });
 function stored<T,>(key: string, fallback: T): T { try { return JSON.parse(localStorage.getItem(key) || 'null') ?? fallback; } catch { return fallback; } }
 function base(path: string) { return path.split('/').filter(Boolean).at(-1) || 'Macintosh HD'; }
@@ -384,6 +384,14 @@ export default function App() {
   function paste(move = false) { if (writable) run(tr('正在粘贴…'), async () => { report(await api.paste(location, move), move ? tr('已移动') : tr('已粘贴')); setClipboard(await api.clipboardGet()); }); }
   function undo() { if (!viewingTrash && undoLabel) run(tr('正在撤销…'), async () => report(await api.undo(), tr('已撤销'))); }
   function showModal(next: Modal) { setPopup(null); setModalError(''); setModal(next); setModalValue('name' in next ? next.name : ''); }
+  // Windows opens 属性 on Alt+double-click; macOS users get the same dialog from the context menu.
+  function showProperties(paths: string[]) {
+    if (!paths.length) return;
+    setPopup(null);
+    Promise.all(paths.map(path => api.info(path)))
+      .then(entries => showModal({ kind: 'properties', entries }))
+      .catch(error => setToast(errorMessage(error)));
+  }
   function create(directory: boolean) {
     if (!writable) return;
     run(tr('正在新建…'), async () => {
@@ -459,7 +467,7 @@ export default function App() {
     });
   }
   async function submitModal(skipTrashConfirmation = false) {
-    if (!modal || (modal.kind === 'shortcuts' || modal.kind === 'archive') || operationLock.current) return;
+    if (!modal || (modal.kind === 'shortcuts' || modal.kind === 'archive' || modal.kind === 'properties') || operationLock.current) return;
     operationLock.current = true; setOperation(tr('正在处理…')); setModalError('');
     try {
       if (modal.kind === 'trash') {
@@ -609,7 +617,7 @@ export default function App() {
       { label: tr('移到回收站'), icon: <Trash2/>, shortcut: '⌘⌫', danger: true, action: () => trash(paths) },
       ...(entry.isDirectory ? [{ label: places.some(place => place.path === entry.path) ? tr('从快速访问取消固定') : tr('固定到快速访问'), icon: <Pin/>, divider: true, action: () => togglePin(entry.path) }] : []),
       { label: tr('在访达中显示'), icon: <ExternalLink/>, divider: true, action: () => run(tr('正在显示…'), () => api.reveal(entry.path)) },
-      { label: tr('属性'), icon: <Info/>, shortcut: '⌘I', action: () => toggleDetails(true) },
+      { label: tr('属性'), icon: <Info/>, shortcut: '⌥⏎', action: () => showProperties(paths) },
     ] : [
       { label: tr('新建文件夹'), icon: <FolderPlus/>, disabled: !writable, action: () => create(true) },
       { label: tr('新建文本文档'), icon: <FilePlus2/>, disabled: !writable, action: () => create(false) },
@@ -617,6 +625,7 @@ export default function App() {
       { label: tr('将项目移到这里'), shortcut: '⌥⌘V', disabled: !writable || !clipboard.paths.length, action: () => paste(true) },
       { label: undoLabel ? tr('撤销{0}', undoLabel) : tr('撤销'), icon: <Undo2/>, shortcut: '⌘Z', disabled: !undoLabel, action: undo },
       { label: tr('刷新'), icon: <RotateCw/>, shortcut: 'F5', action: refreshDirectory },
+      { label: tr('排序方式'), icon: <ArrowDownWideNarrow/>, children: sortMenu },
       { label: hidden ? tr('不显示隐藏项目') : tr('显示隐藏的项目'), checked: hidden, divider: true, action: () => setHidden(v => !v) },
       { label: tr('打开文件夹…'), icon: <FolderOpen/>, action: chooseFolder },
       ...(!isVirtual(location) ? [terminalItem(location)] : []),
@@ -729,7 +738,8 @@ export default function App() {
       else if (ctrl && key === 't') { event.preventDefault(); newTab(); }
       else if (ctrl && key === 'w') { event.preventDefault(); closeTab(tab.id); }
       else if (ctrl && event.shiftKey && key === 'n') { event.preventDefault(); create(true); }
-      else if (ctrl && key === 'i' || event.altKey && key === 'enter') { event.preventDefault(); toggleDetails(); }
+      else if (ctrl && key === 'i') { event.preventDefault(); toggleDetails(); }
+      else if (event.altKey && key === 'enter') { event.preventDefault(); if (selected.size) showProperties([...selected]); }
       else if (ctrl && key === 'tab') { event.preventDefault(); const index = tabs.findIndex(t => t.id === tab.id); setActiveID(tabs[(index + (event.shiftKey ? tabs.length - 1 : 1)) % tabs.length].id); resetNavigation(); }
       else if (key === 'f2') { event.preventDefault(); rename(); }
       else if (key === 'f5' || ctrl && key === 'r') { event.preventDefault(); refreshDirectory(); }
@@ -862,8 +872,8 @@ export default function App() {
       </div>}
       {visible.map((entry, index) => <div key={entry.path} data-path={entry.path} data-index={index} role="option" aria-selected={selected.has(entry.path)} aria-label={entry.name}
         className={`file-row ${selected.has(entry.path) ? 'selected' : ''} ${clipboard.cut && clipboard.paths.includes(entry.path) ? 'cut' : ''} ${dragOver === entry.path ? 'drop-target' : ''} ${entry.hidden ? 'hidden-file' : ''}`}
-        onClick={event => select(entry, event)} onDoubleClick={() => openEntry(entry)} onContextMenu={event => contextMenu(event, entry)} draggable
-        onDragStart={event => { const paths = selected.has(entry.path) ? [...selected] : [entry.path]; event.dataTransfer.setData('application/x-explorer-paths', JSON.stringify(paths)); event.dataTransfer.effectAllowed = 'move'; setPopup(null); }}
+        onClick={event => select(entry, event)} onDoubleClick={event => event.altKey ? showProperties([entry.path]) : openEntry(entry)} onContextMenu={event => contextMenu(event, entry)} draggable
+        onDragStart={event => { const paths = selected.has(entry.path) ? [...selected] : [entry.path]; setPopup(null); if (event.altKey) { event.preventDefault(); api.startDrag(paths); return; } event.dataTransfer.setData('application/x-explorer-paths', JSON.stringify(paths)); event.dataTransfer.effectAllowed = 'move'; }}
         onDragOver={event => { if (entry.isDirectory && !viewingTrash) { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'move'; setDragOver(entry.path); } }}
         onDragLeave={() => setDragOver(null)} onDrop={event => { if (entry.isDirectory) drop(event, entry.path); }}>
         {checkboxes && <input className="item-checkbox" type="checkbox" aria-label={tr('选择 {0}', entry.name)} checked={selected.has(entry.path)} onClick={event => event.stopPropagation()} onDoubleClick={event => event.stopPropagation()} onChange={event => { const checked = event.target.checked; setSelected(previous => { const next = new Set(previous); if (checked) next.add(entry.path); else next.delete(entry.path); return next; }); selectionAnchor.current = entry.path; }}/>}
@@ -1161,14 +1171,36 @@ function ModalDialog({ modal, value, onChange, error, busy, onClose, onSubmit }:
     if (input) { input.focus(); const dot = value.lastIndexOf('.'); input.setSelectionRange(0, modal.kind === 'rename' && dot > 0 ? dot : value.length); }
     else if (modal.kind === 'trash') confirmRef.current?.focus();
   }, []);
-  const title = modal.kind === 'trash' ? tr('移到回收站') : modal.kind === 'rename' ? tr('重命名') : modal.kind === 'folder' ? tr('新建文件夹') : modal.kind === 'file' ? tr('新建文本文档') : tr('键盘快捷键');
-  return <dialog ref={dialogRef} className={`modal ${modal.kind === 'shortcuts' ? 'shortcut-modal' : ''}`} aria-labelledby="modal-title" onCancel={event => { event.preventDefault(); onClose(); }} onClose={onClose}>
+  const title = modal.kind === 'trash' ? tr('移到回收站') : modal.kind === 'rename' ? tr('重命名') : modal.kind === 'folder' ? tr('新建文件夹') : modal.kind === 'file' ? tr('新建文本文档') : modal.kind === 'properties' ? tr('属性') : tr('键盘快捷键');
+  const propertyRows: [string, string][] = modal.kind === 'properties' ? (() => {
+    const entries = modal.entries;
+    const totalSize = entries.reduce((sum, entry) => sum + (entry.isDirectory ? 0 : entry.size), 0);
+    const parents = [...new Set(entries.map(entry => parent(entry.path)))];
+    const bytes = (value: number) => `${new Intl.NumberFormat(getLocale()).format(value)} ${tr('字节')}`;
+    if (entries.length !== 1) return [
+      [tr('名称'), tr('{0} 个项目', entries.length)],
+      [tr('类型'), tr('多个项目')],
+      [tr('位置'), parents.length === 1 ? parents[0] : tr('多个位置')],
+      [tr('大小'), `${size(totalSize)} (${bytes(totalSize)})`],
+    ];
+    const [entry] = entries;
+    return [
+      [tr('名称'), entry.name],
+      [tr('类型'), type(entry)],
+      [tr('位置'), parent(entry.path)],
+      [tr('大小'), entry.isDirectory ? tr('文件夹') : `${size(entry.size)} (${bytes(entry.size)})`],
+      [tr('创建时间'), date(entry.created)],
+      [tr('修改时间'), date(entry.modified)],
+      [tr('属性'), [entry.hidden ? tr('隐藏') : '', entry.isSymlink ? tr('符号链接') : ''].filter(Boolean).join('、') || tr('正常')],
+    ];
+  })() : [];
+  return <dialog ref={dialogRef} className={`modal ${modal.kind === 'shortcuts' ? 'shortcut-modal' : ''} ${modal.kind === 'properties' ? 'properties-modal' : ''}`} aria-labelledby="modal-title" onCancel={event => { event.preventDefault(); onClose(); }} onClose={onClose}>
     <form onSubmit={event => { event.preventDefault(); onSubmit(modal.kind === 'trash' && skipTrashConfirmation); }}><div className="modal-heading"><h2 id="modal-title">{title}</h2><button type="button" aria-label={tr('关闭对话框')} onClick={onClose} disabled={busy}><X size={18}/></button></div>
-      {modal.kind === 'shortcuts' ? <><p className="shortcut-note">{tr('文件操作遵循 macOS 访达的常用快捷键。')}</p><div className="shortcut-list">{[[tr('重命名'), 'Return'], [tr('打开项目'), '⌘O / ⌘↓'], [tr('复制 / 粘贴 / 撤销'), '⌘C / ⌘V / ⌘Z'], [tr('移动已复制的文件'), '⌥⌘V'], [tr('创建副本'), '⌘D'], [tr('全选 / 新建文件夹'), '⌘A / ⇧⌘N'], [tr('移到回收站'), '⌘⌫'], [tr('快速查看'), 'Space / ⌘Y'], [tr('唤醒 Mac Explorer（全局）'), '⌘E'],
-[tr('后退 / 前进 / 上一级'), tr('⌘[ / ⌘] / Backspace 或 ⌘↑')], [tr('前往文件夹 / 搜索'), '⇧⌘G / ⌘F'], [tr('新建 / 关闭标签页'), '⌘T / ⌘W'], [tr('切换标签页'), '⌃Tab / ⌃⇧Tab'], [tr('图标 / 详细信息视图'), '⌘1 / ⌘2'], [tr('预览窗格 / 隐藏项目'), '⇧⌘P / ⇧⌘.'], [tr('详细信息窗格'), '⌘I']].map(([name, keys]) => <div key={name}><span>{name}</span><kbd>{keys}</kbd></div>)}</div><p className="shortcut-note">{tr('移动文件：先 ⌘C，再到目标文件夹按 ⌥⌘V。保留 Ctrl+C / X / V、F2、F5 等兼容快捷键；输入框内沿用文本编辑快捷键。')}</p></> : modal.kind === 'trash' ? <div className="trash-description"><Trash2 size={34} strokeWidth={1.4}/><div><p>{modal.paths.length === 1 ? tr('将“{0}”移到回收站？', base(modal.paths[0])) : tr('将这 {0} 个项目移到回收站？', modal.paths.length)}</p><small>{tr('文件将移入 macOS 回收站，你可以从那里恢复。')}</small></div></div> : <><label className="name-label" htmlFor="entry-name">{tr('名称')}</label><input ref={inputRef} id="entry-name" value={value} onChange={event => onChange(event.target.value)} disabled={busy} autoComplete="off"/><p className="modal-location">{tr('位置：')}{modal.kind === 'rename' ? parent(modal.path) : modal.path}</p></>}
+      {modal.kind === 'properties' ? <dl className="properties-list">{propertyRows.map(([label, content]) => <div key={label}><dt>{label}</dt><dd title={content}>{content}</dd></div>)}</dl> : modal.kind === 'shortcuts' ? <><p className="shortcut-note">{tr('文件操作遵循 macOS 访达的常用快捷键。')}</p><div className="shortcut-list">{[[tr('重命名'), 'Return'], [tr('打开项目'), '⌘O / ⌘↓'], [tr('复制 / 粘贴 / 撤销'), '⌘C / ⌘V / ⌘Z'], [tr('移动已复制的文件'), '⌥⌘V'], [tr('创建副本'), '⌘D'], [tr('全选 / 新建文件夹'), '⌘A / ⇧⌘N'], [tr('移到回收站'), '⌘⌫'], [tr('快速查看'), 'Space / ⌘Y'], [tr('唤醒 Mac Explorer（全局）'), '⌘E'],
+[tr('后退 / 前进 / 上一级'), tr('⌘[ / ⌘] / Backspace 或 ⌘↑')], [tr('前往文件夹 / 搜索'), '⇧⌘G / ⌘F'], [tr('新建 / 关闭标签页'), '⌘T / ⌘W'], [tr('切换标签页'), '⌃Tab / ⌃⇧Tab'], [tr('图标 / 详细信息视图'), '⌘1 / ⌘2'], [tr('预览窗格 / 隐藏项目'), '⇧⌘P / ⇧⌘.'], [tr('详细信息窗格'), '⌘I'], [tr('属性'), 'Alt+双击 / ⌥⏎'], [tr('拖到其他应用'), tr('按住 ⌥ 拖动文件')]].map(([name, keys]) => <div key={name}><span>{name}</span><kbd>{keys}</kbd></div>)}</div><p className="shortcut-note">{tr('移动文件：先 ⌘C，再到目标文件夹按 ⌥⌘V。保留 Ctrl+C / X / V、F2、F5 等兼容快捷键；输入框内沿用文本编辑快捷键。')}</p></> : modal.kind === 'trash' ? <div className="trash-description"><Trash2 size={34} strokeWidth={1.4}/><div><p>{modal.paths.length === 1 ? tr('将“{0}”移到回收站？', base(modal.paths[0])) : tr('将这 {0} 个项目移到回收站？', modal.paths.length)}</p><small>{tr('文件将移入 macOS 回收站，你可以从那里恢复。')}</small></div></div> : <><label className="name-label" htmlFor="entry-name">{tr('名称')}</label><input ref={inputRef} id="entry-name" value={value} onChange={event => onChange(event.target.value)} disabled={busy} autoComplete="off"/><p className="modal-location">{tr('位置：')}{modal.kind === 'rename' ? parent(modal.path) : modal.path}</p></>}
       {modal.kind === 'trash' && <label className="trash-confirmation-preference"><input type="checkbox" checked={skipTrashConfirmation} disabled={busy} onChange={event => setSkipTrashConfirmation(event.target.checked)}/>{tr('不再显示此提示')}</label>}
       {error && <p className="modal-error" role="alert">{error}</p>}
-      <div className="modal-actions"><button type="button" className="secondary-button" disabled={busy} onClick={onClose}>{modal.kind === 'shortcuts' ? tr('知道了') : tr('取消')}</button>{modal.kind !== 'shortcuts' && <button type="submit" ref={confirmRef} className="primary-button" disabled={busy || modal.kind !== 'trash' && !value.trim()}>{busy ? tr('正在处理…') : modal.kind === 'trash' ? tr('移到回收站') : tr('确定')}</button>}</div>
+      <div className="modal-actions"><button type="button" className="secondary-button" disabled={busy} onClick={onClose}>{modal.kind === 'shortcuts' ? tr('知道了') : modal.kind === 'properties' ? tr('关闭') : tr('取消')}</button>{modal.kind !== 'shortcuts' && modal.kind !== 'properties' && <button type="submit" ref={confirmRef} className="primary-button" disabled={busy || modal.kind !== 'trash' && !value.trim()}>{busy ? tr('正在处理…') : modal.kind === 'trash' ? tr('移到回收站') : tr('确定')}</button>}</div>
     </form>
   </dialog>;
 }

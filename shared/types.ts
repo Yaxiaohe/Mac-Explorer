@@ -56,6 +56,7 @@ export interface ExplorerAPI {
   openTerminal(path: string): Promise<void>;
   share(paths: string[]): Promise<void>;
   info(path: string): Promise<FileEntry>;
+  startDrag(paths: string[]): void;
   preview(path: string): Promise<Preview>;
   icon(path: string, pixels?: number): Promise<string>;
   create(parent: string, name: string, directory: boolean): Promise<string>;

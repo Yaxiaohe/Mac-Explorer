@@ -1,6 +1,6 @@
 {
   "name": "mac-explorer",
-  "version": "0.1.45",
+  "version": "0.1.46",
   "private": true,
   "description": "A Windows 11-style file explorer for macOS",
   "main": "dist-electron/main.cjs",
@@ -24,6 +24,7 @@
     "test:text-edit": "npm run build && node scripts/text-edit-smoke.mjs",
     "test:shortcuts": "npm run build && node scripts/finder-shortcuts-smoke.mjs",
     "test:cut": "npm run build && node scripts/cut-shortcut-smoke.mjs",
+    "test:properties": "npm run build && node scripts/properties-sort-drag-smoke.mjs",
     "test:swipe": "npm run build && node scripts/swipe-navigation-smoke.mjs",
     "test:startup": "npm run build && node scripts/startup-smoke.mjs",
     "test:selection": "npm run build && node scripts/marquee-smoke.mjs",

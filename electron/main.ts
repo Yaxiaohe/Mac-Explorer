@@ -273,6 +273,22 @@ ipc('search', async (input: string, query: string, hidden: boolean) => {
 });
 ipc('cancel-search', () => windows.get(currentWindow()!)?.searchController?.abort());
 ipc('info', (input: string) => entryFor(absolute(input)));
+// Dragging to another app needs a native drag session; an HTML5 drag never leaves the window.
+const dragIcons = new Map<string, Electron.NativeImage>();
+ipcMain.on('start-drag', async (event, inputs: unknown) => {
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  if (!owner || !windows.has(owner)) return;
+  let paths: string[];
+  try { paths = pathsArg(inputs); } catch { return; }
+  if (!paths.length) return;
+  if (process.env.EXPLORER_TEST_ROOT) { (globalThis as { __lastDrag?: string[] }).__lastDrag = paths; return; }
+  try {
+    let icon = dragIcons.get(paths[0]);
+    if (!icon) { icon = await app.getFileIcon(paths[0], { size: 'normal' }); dragIcons.set(paths[0], icon); }
+    if (event.sender.isDestroyed()) return;
+    event.sender.startDrag({ file: paths[0], files: paths, icon });
+  } catch { /* The gesture can end before the icon is ready. */ }
+});
 ipc('open', async (input: string) => {
   const filePath = absolute(input);
   await fs.access(filePath);
