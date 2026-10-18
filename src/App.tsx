@@ -684,7 +684,10 @@ export default function App() {
   function moveInto(paths: string[], destination: string) {
     if (!paths.length || isVirtual(destination)) return;
     if (viewingTrash && trashRoots.some(root => destination === root || destination.startsWith(root + '/'))) return;
-    run(tr('正在移动拖入的文件…'), async () => report(await api.moveTo(paths, destination), tr('已移动')));
+    // Releasing over the folder a file already lives in is a no-op, not a failed move.
+    const moving = paths.filter(path => path !== destination && !path.startsWith(destination + '/'));
+    if (!moving.length) return;
+    run(tr('正在移动拖入的文件…'), async () => report(await api.moveTo(moving, destination), tr('已移动')));
   }
   dropHandler.current = moveInto;
   function drop(event: React.DragEvent, destination: string) {
@@ -724,6 +727,13 @@ export default function App() {
     tabHover.current = { id, timer: window.setTimeout(() => { tabHover.current = null; setActiveID(id); resetNavigation(); }, 600) };
   };
   useEffect(() => api.onDragHover(key => hoverHandler.current(key)), []);
+  // Hovering a tab switches folders mid-drag, and the boxes captured at dragstart describe the
+  // old listing. Re-send them once a new listing has painted so the release lands where it looks.
+  useEffect(() => {
+    if (!dragPaths.current.length) return;
+    const frame = requestAnimationFrame(() => api.updateDragTargets(dropTargets()));
+    return () => cancelAnimationFrame(frame);
+  }, [visible.length, location]);
   useEffect(() => api.onDragDrop(destination => { setDragOver(null); dropHandler.current(dragPaths.current, destination); }), []);
   useEffect(() => {
     const keydown = (event: globalThis.KeyboardEvent) => {

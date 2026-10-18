@@ -60,6 +60,7 @@ export interface ExplorerAPI {
   share(paths: string[]): Promise<void>;
   info(path: string): Promise<FileEntry>;
   startDrag(paths: string[], icon?: string, targets?: DragTargetArea[]): void;
+  updateDragTargets(targets: DragTargetArea[]): void;
   relaunch(): Promise<void>;
   onDragHover(callback: (key: string | null) => void): () => void;
   onDragDrop(callback: (destination: string) => void): () => void;

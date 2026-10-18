@@ -321,10 +321,13 @@ function dragTargetAreas(value: unknown): DragTargetArea[] {
 // onto a folder, tab or sidebar row inside the window moves them. The main process follows the
 // cursor during the session and, when the button comes up, either forwards the landing area to
 // the window or leaves the drop to whichever app received it.
+// The window re-sends the areas whenever its listing changes mid-drag (hovering a tab switches
+// it), so the boxes always describe what is actually on screen.
+let liveDragTargets: DragTargetArea[] = [];
+ipcMain.on('drag-targets', (_event, payload: unknown) => { liveDragTargets = dragTargetAreas(payload); });
 function trackNativeDrop(sender: Electron.WebContents, owner: BrowserWindow, areas: DragTargetArea[]) {
   if (!areas.length || !defaults?.mouseDown) return;
-  const origin = owner.getContentBounds();
-  const placed = areas.map(area => ({ ...area, x: origin.x + area.x, y: origin.y + area.y }));
+  liveDragTargets = areas;
   let hovered: string | null = null;
   let held = false;
   const started = Date.now();
@@ -332,12 +335,16 @@ function trackNativeDrop(sender: Electron.WebContents, owner: BrowserWindow, are
   const stop = () => clearInterval(timer);
   timer = setInterval(() => {
     if (sender.isDestroyed() || owner.isDestroyed()) { stop(); return; }
-    const pressed = defaults!.mouseDown();
-    if (pressed) held = true;
+    const origin = owner.getContentBounds();
+    const placed = liveDragTargets.map(area => ({ ...area, x: origin.x + area.x, y: origin.y + area.y }));
     const point = screen.getCursorScreenPoint();
-    const hit = placed.find(area => point.x >= area.x && point.x < area.x + area.width && point.y >= area.y && point.y < area.y + area.height) ?? null;
+    // The listing pane covers its own rows, so the smallest hit wins: a row beats the pane.
+    const hit = placed
+      .filter(area => point.x >= area.x && point.x < area.x + area.width && point.y >= area.y && point.y < area.y + area.height)
+      .sort((first, second) => first.width * first.height - second.width * second.height)[0] ?? null;
     if ((hit?.key ?? null) !== hovered) { hovered = hit?.key ?? null; sender.send('drag-hover', hovered); }
-    if (held && !pressed) { stop(); if (process.env.EXPLORER_DRAG_DEBUG) console.log('[drag] ended', { hit: hit?.key ?? null, point }); if (hit) sender.send('drag-drop', hit.path); return; }
+    if (!held && defaults!.mouseDown()) held = true;
+    if (held && !defaults!.mouseDown()) { stop(); if (hit) sender.send('drag-drop', hit.path); return; }
     // A gesture that never held the button (or one the system cancelled at once) must not leave a timer behind.
     if (!held && Date.now() - started > 1500) { stop(); if (hovered) sender.send('drag-hover', null); }
   }, 40);
