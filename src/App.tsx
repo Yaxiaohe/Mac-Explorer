@@ -172,6 +172,7 @@ export default function App() {
   const [editingName, setEditingName] = useState<{ path: string; name: string } | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [dragOver, setDragOver] = useState<string | null>(null);
+  const [trashPermissionDenied, setTrashPermissionDenied] = useState(false);
   const dragPaths = useRef<string[]>([]);
   const dropHandler = useRef<(paths: string[], destination: string) => void>(() => {});
   const tabHover = useRef<{ id: string; timer: number } | null>(null);
@@ -238,13 +239,18 @@ export default function App() {
   useEffect(() => {
     if (!boot) return;
     const version = ++generation.current;
-    setLoading(loadedLocation.current !== location || !!submittedQuery); setError(''); setSearchNote('');
+    setLoading(loadedLocation.current !== location || !!submittedQuery); setError(''); setSearchNote(''); setTrashPermissionDenied(false);
     const load = async () => {
       if (isTrashLocation(location)) {
         const result = await api.listTrash(location === TRASH ? undefined : location.slice(6));
         if (version === generation.current) {
           setTrashRoots(result.roots);
-          if (result.unavailable.length) setError(tr('部分回收站无法读取。请检查系统设置 → 隐私与安全性 → 完全磁盘访问权限。'));
+          // Losing the personal trash means macOS is blocking the whole app, which a checklist item
+          // and a relaunch fixes. A single unreadable external volume is a narrower problem.
+          const personal = result.unavailable.some(root => root.endsWith('/.Trash'));
+          setTrashPermissionDenied(personal);
+          if (personal) setError(tr('无法读取个人回收站。请在「系统设置 → 隐私与安全性 → 完全磁盘访问权限」中勾选 Mac Explorer，然后退出并重新打开应用。'));
+          else if (result.unavailable.length) setError(tr('部分磁盘的回收站无法读取：{0}', result.unavailable.join('、')));
           if (submittedQuery) setSearchNote(tr('搜索当前回收站位置'));
         }
         return result.entries.filter(entry => !submittedQuery || entry.name.toLocaleLowerCase().includes(submittedQuery.toLocaleLowerCase()));
@@ -1019,7 +1025,7 @@ export default function App() {
 
       <main className={`main-pane ${details || previewPane ? 'has-details' : ''}`}>
         {viewingTrash && trashOperationError && !error && <div className="error-bar" role="alert"><Info size={17}/><span>{trashOperationError}</span><button aria-label={tr('关闭操作错误提示')} onClick={() => setTrashOperationError('')}><X size={15}/></button></div>}
-        {error && <div className="error-bar" role="alert"><Info size={17}/><span>{error}</span>{error.includes(tr('完全磁盘访问权限')) && <button className="permission-settings-button" disabled={openingPrivacySettings} onClick={() => void openPrivacySettings()} title={tr('打开系统设置中的完全磁盘访问权限')}>{openingPrivacySettings ? tr('正在打开…') : tr('前往设置')}</button>}<button title={tr('关闭提示')} aria-label={tr('关闭错误提示')} onClick={() => setError('')}><X size={15}/></button></div>}
+        {error && <div className="error-bar" role="alert"><Info size={17}/><span>{error}</span>{error.includes(tr('完全磁盘访问权限')) && <button className="permission-settings-button" disabled={openingPrivacySettings} onClick={() => void openPrivacySettings()} title={tr('打开系统设置中的完全磁盘访问权限')}>{openingPrivacySettings ? tr('正在打开…') : tr('前往设置')}</button>}{trashPermissionDenied && <button className="permission-settings-button" onClick={() => void api.relaunch()} title={tr('授予权限后重新启动，让系统重新读取')}>{tr('重新启动')}</button>}<button title={tr('关闭提示')} aria-label={tr('关闭错误提示')} onClick={() => setError('')}><X size={15}/></button></div>}
         {viewingTrash && <div className="search-summary"><Trash2 size={16}/><span>{tr('回收站')}</span><small>{tr('还原到原位置；无法确定原位置时选择文件夹')}</small><button className="secondary-button" disabled={!selected.size || !!operation} onClick={() => restoreTrash()}>{tr('还原')}</button><button className="secondary-button" disabled={!!operation} onClick={clearTrash}>{tr('清空回收站…')}</button></div>}
         {submittedQuery && <div className="search-summary"><Search size={16}/><span>{tr('“{0}” 的搜索结果', submittedQuery)}</span><small>{loading ? tr('正在搜索子文件夹…') : searchNote || tr('{0} 个匹配项目', visible.length)}</small><button onClick={() => { setQuery(''); setSubmittedQuery(''); }}>{tr('退出搜索')}</button></div>}
         <div ref={contentRef} tabIndex={0} className={`file-content view-${view} ${dragOver === location ? 'drop-target' : ''}`} aria-label={label(location)} aria-busy={loading} data-drop-path={writable && !isVirtual(location) ? location : undefined} data-drop-key={location}

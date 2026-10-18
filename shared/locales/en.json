@@ -411,5 +411,9 @@
   "拖到其他应用": "Drag to another app",
   "按住 ⌥ 拖动文件": "Hold ⌥ while dragging",
   "拖出到其他应用": "Drag out to another app",
-  "直接拖动文件": "Just drag the file"
+  "直接拖动文件": "Just drag the file",
+  "无法读取个人回收站。请在「系统设置 → 隐私与安全性 → 完全磁盘访问权限」中勾选 Mac Explorer，然后退出并重新打开应用。": "Cannot read your Trash. Tick Mac Explorer under System Settings → Privacy & Security → Full Disk Access, then quit and reopen the app.",
+  "部分磁盘的回收站无法读取：{0}": "Some volumes have an unreadable Trash: {0}",
+  "重新启动": "Relaunch",
+  "授予权限后重新启动，让系统重新读取": "Relaunch after granting access so the system reads it again"
 }

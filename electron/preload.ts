@@ -33,6 +33,7 @@ const api: ExplorerAPI = {
   info: path => ipcRenderer.invoke('info', path),
   startDrag: (paths, icon, targets) => ipcRenderer.send('start-drag', { paths, icon, targets }),
   onDragHover: callback => { const listener = (_event: unknown, key: string | null) => callback(key); ipcRenderer.on('drag-hover', listener); return () => ipcRenderer.removeListener('drag-hover', listener); },
+  relaunch: () => ipcRenderer.invoke('relaunch'),
   onDragDrop: callback => { const listener = (_event: unknown, destination: string) => callback(destination); ipcRenderer.on('drag-drop', listener); return () => ipcRenderer.removeListener('drag-drop', listener); },
   preview: path => ipcRenderer.invoke('preview', path),
   icon: (path, pixels) => ipcRenderer.invoke('icon', path, pixels),

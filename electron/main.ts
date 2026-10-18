@@ -136,12 +136,25 @@ ipc('set-language', async (mode: unknown) => {
 });
 // Fixed destination only: renderer cannot supply arbitrary external URLs.
 ipc('open-privacy-settings', () => shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles'));
+// Full Disk Access is read when a process starts, so a freshly granted checkbox only takes
+// effect after a relaunch; doing it from the error bar saves the user the trip to the dock.
+ipc('relaunch', () => { app.relaunch(); app.exit(0); });
 const trashOrigins = new TrashOrigins(path.join(app.getPath('userData'), 'trash-origins'));
 async function trashRoots() {
   const home = testRoot || os.homedir();
   const volumes = testRoot ? path.join(testRoot, 'Volumes') : '/Volumes';
+  const roots = [path.join(home, '.Trash')];
   const mounted = await fs.readdir(volumes).catch(() => [] as string[]);
-  const roots = [path.join(home, '.Trash'), ...mounted.map(name => path.join(volumes, name, '.Trashes', String(process.getuid!())))];
+  for (const name of mounted) {
+    // The startup disk is a symlink to / and the dotted entries are system internals; neither
+    // keeps a trash for this user, and probing them only produced permission noise.
+    if (name.startsWith('.')) continue;
+    const mount = path.join(volumes, name);
+    const stats = await fs.lstat(mount).catch(() => null);
+    if (!stats || stats.isSymbolicLink() || !stats.isDirectory()) continue;
+    const root = path.join(mount, '.Trashes', String(process.getuid!()));
+    if (await fs.stat(root).then(entry => entry.isDirectory()).catch(() => false)) roots.push(root);
+  }
   return roots;
 }
 ipc('list-trash', async (directory?: string) => listTrash(await trashRoots(), directory));
